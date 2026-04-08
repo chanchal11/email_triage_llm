@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import random
 import sys
 import time
@@ -50,7 +51,9 @@ LABEL_TO_CATEGORY: dict[str, str] = {
     "ignore": "promotion",
 }
 
-CSV_PATH = Path(__file__).parent / "docs" / "email_test_data.csv"
+CSV_PATH = Path(
+    os.environ.get("EMAIL_TRIAGE_DATA", str(Path(__file__).parent / "docs" / "email_test_data.csv"))
+)
 
 
 # ---------------------------------------------------------------------------
@@ -185,20 +188,17 @@ class QAgent:
 # Helpers
 # ---------------------------------------------------------------------------
 def load_emails() -> list[dict]:
-    """Load emails from the CSV dataset."""
+    """Load emails from the CSV dataset (path set by EMAIL_TRIAGE_DATA or default)."""
     if not CSV_PATH.exists():
-        print(f"[WARN] Dataset not found at {CSV_PATH}. Using fallback emails.")
-        return [
-            {"email_text": "Urgent meeting at 5 PM today", "true_label": "mark_important"},
-            {"email_text": "You have won a lottery! Claim now", "true_label": "mark_spam"},
-            {"email_text": "Can we schedule a meeting tomorrow?", "true_label": "reply"},
-            {"email_text": "Big sale on electronics this weekend", "true_label": "ignore"},
-            {"email_text": "Reminder: project deadline tomorrow", "true_label": "mark_important"},
-            {"email_text": "Exclusive offer just for you!!!", "true_label": "mark_spam"},
-            {"email_text": "Team meeting rescheduled to Friday", "true_label": "reply"},
-        ]
+        raise FileNotFoundError(
+            f"Dataset not found: {CSV_PATH}\n"
+            "Set EMAIL_TRIAGE_DATA=/path/to/emails.csv or place "
+            "docs/email_test_data.csv in the repo root."
+        )
     with open(CSV_PATH, newline="", encoding="utf-8") as fh:
-        return list(csv.DictReader(fh))
+        rows = list(csv.DictReader(fh))
+    print(f"[DATA] Loaded {len(rows)} emails from {CSV_PATH}")
+    return rows
 
 
 def compute_reward_local(action: str, correct_action: str) -> float:

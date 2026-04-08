@@ -15,6 +15,7 @@ When action == "reply" the environment also generates an LLM reply.
 """
 
 import csv
+import os
 import random
 from pathlib import Path
 from uuid import uuid4
@@ -32,29 +33,44 @@ except ImportError:
     from models import EmailTriageAction, EmailTriageObservation  # type: ignore[import]
     from llm import compute_reward, generate_reply  # type: ignore[import]
 
-# Path to the evaluation dataset — works both in Docker and local dev
-_CSV_PATHS = [
+# ---------------------------------------------------------------------------
+# Dataset loading
+# ---------------------------------------------------------------------------
+# Override the CSV path with the EMAIL_TRIAGE_DATA env var, e.g.:
+#   EMAIL_TRIAGE_DATA=/data/my_emails.csv uvicorn ...
+_DEFAULT_CSV_PATHS = [
+    Path(os.environ["EMAIL_TRIAGE_DATA"]) if "EMAIL_TRIAGE_DATA" in os.environ else None,
     Path(__file__).parent.parent.parent / "docs" / "email_test_data.csv",
     Path("/app/docs/email_test_data.csv"),
 ]
 
 
 def _load_emails() -> list:
-    """Load emails from the CSV dataset, trying known paths in order."""
-    for csv_path in _CSV_PATHS:
-        if csv_path.exists():
+    """Load emails from the CSV dataset.
+
+    Search order:
+      1. Path in EMAIL_TRIAGE_DATA environment variable (if set)
+      2. docs/email_test_data.csv relative to the repo root
+      3. /app/docs/email_test_data.csv (Docker path)
+
+    Each CSV row must have columns: email_text, true_label
+    Optional columns (subject, sender) are used when present.
+
+    Raises:
+        FileNotFoundError: if no CSV is found and no records can be loaded.
+    """
+    for csv_path in _DEFAULT_CSV_PATHS:
+        if csv_path is not None and csv_path.exists():
             with open(csv_path, newline="", encoding="utf-8") as fh:
-                return list(csv.DictReader(fh))
-    # Fallback: small in-memory dataset so the server can still start
-    return [
-        {"email_text": "Urgent meeting at 5 PM today", "true_label": "mark_important"},
-        {"email_text": "You have won a lottery! Claim now", "true_label": "mark_spam"},
-        {"email_text": "Can we schedule a meeting tomorrow?", "true_label": "reply"},
-        {"email_text": "Big sale on electronics this weekend", "true_label": "ignore"},
-        {"email_text": "Reminder: project deadline tomorrow", "true_label": "mark_important"},
-        {"email_text": "Exclusive offer just for you!!!", "true_label": "mark_spam"},
-        {"email_text": "Team meeting rescheduled to Friday", "true_label": "reply"},
-    ]
+                rows = list(csv.DictReader(fh))
+            if rows:
+                print(f"[ENV] Loaded {len(rows)} emails from {csv_path}")
+                return rows
+
+    raise FileNotFoundError(
+        "No email dataset found. Set EMAIL_TRIAGE_DATA=/path/to/emails.csv "
+        "or place docs/email_test_data.csv in the repo root."
+    )
 
 
 class EmailTriageEnvironment(Environment):
