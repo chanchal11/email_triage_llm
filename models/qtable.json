@@ -1,0 +1,39 @@
+{
+  "q_table": {
+    "promotion": {
+      "reply": -4.8498149999999995,
+      "mark_spam": 0.0,
+      "mark_important": -4.5125969999999995,
+      "ignore": 6.919503837926365
+    },
+    "urgent": {
+      "reply": -2.4475464000000002,
+      "mark_spam": -5.1,
+      "mark_important": 0.6550306831229502,
+      "ignore": -2.4
+    },
+    "work": {
+      "reply": 9.526139447994606,
+      "mark_spam": -4.05,
+      "mark_important": -3.2849999999999997,
+      "ignore": 0.0
+    },
+    "personal": {
+      "reply": -2.1,
+      "mark_spam": 2.2439999999999998,
+      "mark_important": -2.97,
+      "ignore": -1.5
+    }
+  },
+  "hyperparameters": {
+    "alpha": 0.3,
+    "gamma": 0.9,
+    "epsilon": 0.05,
+    "epsilon_min": 0.05,
+    "epsilon_decay": 0.97
+  },
+  "training_stats": {
+    "episodes": 100,
+    "avg_reward": 2.25
+  }
+}

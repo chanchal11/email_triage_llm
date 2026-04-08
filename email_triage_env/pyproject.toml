@@ -1,0 +1,43 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-email_triage_env"
+version = "0.1.0"
+description = "Email Triage Env environment for OpenEnv"
+requires-python = ">=3.10"
+dependencies = [
+    # Core OpenEnv runtime (provides FastAPI server + HTTP client types)
+    # install from github
+    # "openenv-core[core] @ git+https://github.com/meta-pytorch/OpenEnv.git",
+    "openenv-core[core]>=0.2.0",
+    # LLM dependencies for classification (bart-large-mnli) and generation (gpt2)
+    "transformers>=4.40.0",
+    "torch>=2.0.0",
+    "accelerate>=0.30.0",
+    # Data handling
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.0.0",
+]
+
+[project.scripts]
+# Server entry point - enables running via: uv run --project . server
+# or: python -m email_triage_env.server.app
+server = "email_triage_env.server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["email_triage_env", "email_triage_env.server"]
+package-dir = { "email_triage_env" = ".", "email_triage_env.server" = "server" }

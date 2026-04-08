@@ -1,0 +1,16 @@
+email_text,true_label
+Urgent meeting at 5 PM today,mark_important
+You have won a lottery! Claim now,mark_spam
+Can we schedule a meeting tomorrow?,reply
+Big sale on electronics this weekend,ignore
+Interview scheduled for next Monday,reply
+Reminder: project deadline tomorrow,mark_important
+Exclusive offer just for you!!!,mark_spam
+Let's catch up sometime this week,reply
+Discounts on fashion products,ignore
+Urgent: server downtime issue,mark_important
+Win a free trip now!!!,mark_spam
+Team meeting rescheduled to Friday,reply
+"Limited time promotion, shop now",ignore
+Important update regarding your account,mark_important
+"Congratulations, you are selected!",reply
