@@ -55,6 +55,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 _TRAIN_JSONL_PATHS = [
     Path(os.environ["EMAIL_TRIAGE_TRAIN"]) if "EMAIL_TRIAGE_TRAIN" in os.environ else None,
+    # Bundled inside email_triage_env/docs/ — present in HF Spaces Docker image at /app/env/docs/
+    Path(__file__).parent.parent / "docs" / "train_data.jsonl",
+    # Local development: project-root/docs/
     Path(__file__).parent.parent.parent / "docs" / "train_data.jsonl",
     Path("/app/docs/train_data.jsonl"),
 ]

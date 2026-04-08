@@ -40,12 +40,12 @@ except Exception as e:  # pragma: no cover
 # These imports work in both local package mode and Docker (PYTHONPATH=/app/env)
 try:
     from ..models import EmailTriageAction, EmailTriageObservation  # local package
-    from ..llm import classify_email, decide_action, compute_reward, generate_reply
+    from ..llm import classify_email, decide_action, generate_reply
     from .email_triage_env_environment import EmailTriageEnvironment, _load_emails
 except ImportError:
     from models import EmailTriageAction, EmailTriageObservation  # type: ignore[import]
-    from llm import classify_email, decide_action, compute_reward, generate_reply  # type: ignore[import]
-    from email_triage_env_environment import EmailTriageEnvironment, _load_emails  # type: ignore[import]
+    from llm import classify_email, decide_action, generate_reply  # type: ignore[import]
+    from server.email_triage_env_environment import EmailTriageEnvironment, _load_emails  # type: ignore[import]
 
 # ---------------------------------------------------------------------------
 # OpenEnv core app (provides /ws, /step, /reset, /state, /schema)
@@ -67,7 +67,8 @@ _current_email: Optional[dict] = None
 
 
 class ActionRequest(BaseModel):
-    action: str  # "reply" | "mark_spam" | "mark_important" | "ignore"
+    action: str
+    value: Optional[str] = None  # required for reply / route_to_department
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +76,10 @@ class ActionRequest(BaseModel):
 # ---------------------------------------------------------------------------
 router = APIRouter(tags=["Email Triage Demo"])
 
-VALID_ACTIONS = {"reply", "mark_spam", "mark_important", "ignore"}
+VALID_ACTIONS = {
+    "reply", "mark_spam", "mark_important", "ignore",
+    "route_to_department", 'high-priority "crisis"',
+}
 
 
 @router.get("/reset", summary="Sample a new email to triage")
@@ -89,7 +93,8 @@ def reset_email():
     _current_email = random.choice(_emails)
     return {
         "email": _current_email["email_text"],
-        "correct_action": _current_email["true_label"],
+        "category": _current_email["category"],
+        "correct_steps": _current_email["steps"],
     }
 
 
@@ -108,8 +113,9 @@ def step_email(body: ActionRequest):
             detail=f"Invalid action '{body.action}'. Choose from: {sorted(VALID_ACTIONS)}",
         )
 
-    correct = _current_email["true_label"]
-    reward = compute_reward(body.action, correct)
+    correct_steps = _current_email["steps"]
+    first_correct = correct_steps[0]["action"] if correct_steps else None
+    reward = 10.0 if body.action == first_correct else -5.0
 
     reply = None
     if body.action == "reply":
@@ -117,7 +123,8 @@ def step_email(body: ActionRequest):
 
     return {
         "action_taken": body.action,
-        "correct_action": correct,
+        "value": body.value,
+        "correct_steps": correct_steps,
         "reward": reward,
         "reply": reply,
     }
@@ -139,11 +146,12 @@ def auto_run():
     global _current_email
     _current_email = random.choice(_emails)
     email_text = _current_email["email_text"]
-    correct = _current_email["true_label"]
+    correct_steps = _current_email["steps"]
+    first_correct = correct_steps[0]["action"] if correct_steps else None
 
     category = classify_email(email_text)
     action = decide_action(category)
-    reward = compute_reward(action, correct)
+    reward = 10.0 if action == first_correct else -5.0
 
     reply = None
     if action == "reply":
@@ -153,7 +161,7 @@ def auto_run():
         "email": email_text,
         "category": category,
         "action": action,
-        "correct_action": correct,
+        "correct_steps": correct_steps,
         "reward": reward,
         "reply": reply,
     }
