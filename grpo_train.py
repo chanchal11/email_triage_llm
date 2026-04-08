@@ -76,35 +76,42 @@ DEPARTMENTS = [
 # System prompt
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = (
-    "You are an expert email triage assistant.\n"
-    "Analyse the email and respond with the ORDERED sequence of triage actions "
-    "as a valid JSON array.\n\n"
-    "Available actions:\n"
-    '  {"action": "high-priority \\"crisis\\""}'
-    "           — first step for critical/emergency emails\n"
-    '  {"action": "mark_important"}'
-    "             — flag as important\n"
-    '  {"action": "mark_spam"}'
-    "                 — spam / scam / phishing\n"
-    '  {"action": "ignore"}'
-    "                    — low-priority promotion or newsletter\n"
-    '  {"action": "reply", "value": "<reply text>"}'
-    "  — respond professionally\n"
+    "You are an email triage assistant. "
+    "Return a JSON array of the ordered triage steps for the email.\n\n"
+    "Actions (choose the minimum necessary steps):\n"
+    '  {"action": "mark_spam"}                             '
+    "— spam / scam / phishing / unsolicited bulk email\n"
+    '  {"action": "ignore"}                               '
+    "— low-priority newsletter, promotion, or marketing\n"
+    '  {"action": "reply", "value": "<short reply>"}      '
+    "— professional response needed\n"
+    '  {"action": "mark_important"}                       '
+    "— flag as important (NOT a crisis)\n"
     '  {"action": "route_to_department", "value": "<dept>"}'
-    " — forward to department\n\n"
-    "Departments: " + " | ".join(DEPARTMENTS) + "\n\n"
+    " — forward to: "
+    + " | ".join(DEPARTMENTS)
+    + "\n"
+    '  {"action": "high-priority \\"crisis\\""}           '
+    "— ONLY for genuine production outages, security breaches, "
+    "financial fraud, physical emergencies, or legal crises. "
+    "ALWAYS the FIRST step, followed by mark_important and route_to_department.\n\n"
     "Rules:\n"
-    "  • Output ONLY the JSON array — no explanation, no extra text.\n"
-    "  • Crisis emails MUST start with the crisis action.\n"
-    "  • Spam and ignore emails need only one step.\n"
-    "  • For `reply`, provide a professional short reply as the value.\n"
-    "  • For `route_to_department`, use an exact department name from the list.\n\n"
+    "  • Output ONLY the JSON array. No explanation or extra text.\n"
+    "  • Spam → one step only: mark_spam.\n"
+    "  • Promotions / newsletters / marketing → one step only: ignore.\n"
+    "  • Most routine work emails → mark_important then route_to_department.\n"
+    "  • Crisis is RARE — only real emergencies qualify.\n\n"
     "Examples:\n"
-    '  Spam email → [{"action": "mark_spam"}]\n'
-    '  Important work email → [{"action": "mark_important"}, '
+    '  Promotion/newsletter → [{"action": "ignore"}]\n'
+    '  Phishing/lottery scam → [{"action": "mark_spam"}]\n'
+    '  Meeting request → [{"action": "reply", "value": "Happy to connect! '
+    'Let me check my calendar."}]\n'
+    '  HR complaint → [{"action": "mark_important"}, '
     '{"action": "route_to_department", "value": "HR"}]\n'
-    '  Crisis email → [{"action": "high-priority \\"crisis\\""}, '
-    '{"action": "mark_important"}, {"action": "route_to_department", "value": "Tech Support"}]\n'
+    '  Production database breach → '
+    '[{"action": "high-priority \\"crisis\\""}, '
+    '{"action": "mark_important"}, '
+    '{"action": "route_to_department", "value": "Tech Support"}]\n'
 )
 
 
@@ -132,15 +139,35 @@ def load_emails(jsonl_path: Path) -> list[dict]:
 # Step extraction from model output
 # ---------------------------------------------------------------------------
 
+# Actions that legitimately carry a value payload
+_VALUE_ACTIONS = {"reply", "route_to_department"}
+
+
+def _normalize_step(action: str, value: Any) -> dict:
+    """Normalise one extracted step.
+
+    • Strip value for actions that must not have one (crisis, mark_*, ignore).
+    • Treat empty-string value as missing.
+    """
+    if action not in _VALUE_ACTIONS:
+        return {"action": action, "value": None}
+    return {"action": action, "value": value if value else None}
+
+
 def extract_steps(text: str) -> list[dict]:
     """Extract triage steps from model output.
 
-    Tries JSON parse first; falls back to scanning for known action keywords.
+    Strategy:
+      1. Find the first JSON array in the output and parse it.
+      2. Fall back to scanning for the FIRST recognised action keyword only
+         (avoids accumulating all keywords that appear anywhere in the text).
+
     Returns list of {"action": str, "value": str | None} dicts.
     """
     text = text.strip()
-    # 1. Try to extract a JSON array
-    match = re.search(r"\[.*?\]", text, re.DOTALL)
+
+    # 1. Try to extract a JSON array (greedy match to get the full array)
+    match = re.search(r"\[.*\]", text, re.DOTALL)
     if match:
         try:
             parsed = json.loads(match.group())
@@ -148,16 +175,22 @@ def extract_steps(text: str) -> list[dict]:
                 steps = []
                 for item in parsed:
                     if isinstance(item, dict) and "action" in item:
-                        steps.append({"action": item["action"], "value": item.get("value")})
+                        steps.append(_normalize_step(item["action"], item.get("value")))
                 if steps:
                     return steps
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # 2. Fall back: scan for action keywords (longer ones first to avoid substring hits)
-    fallback_order = [CRISIS_ACTION, "mark_important", "mark_spam",
-                      "route_to_department", "ignore", "reply"]
-    found = []
+    # 2. Keyword fallback — return ONLY the FIRST found action, not all of them.
+    #    Order: specific multi-token tokens first to avoid substring collisions.
+    fallback_order = [
+        "route_to_department",
+        "mark_important",
+        "mark_spam",
+        CRISIS_ACTION,
+        "ignore",
+        "reply",
+    ]
     text_lower = text.lower()
     for action in fallback_order:
         if action.lower() in text_lower:
@@ -167,25 +200,52 @@ def extract_steps(text: str) -> list[dict]:
                     if dept.lower() in text_lower:
                         step["value"] = dept
                         break
-            found.append(step)
-    return found if found else [{"action": "ignore", "value": None}]
+            return [step]
+
+    return [{"action": "ignore", "value": None}]
 
 
 # ---------------------------------------------------------------------------
 # Step-sequence reward scorer
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Step-sequence reward scorer
+# ---------------------------------------------------------------------------
+
+# Asymmetric penalty table: (predicted_first_action, correct_first_action) → extra penalty
+# Applied ON TOP of the per-step -5 for a wrong answer.
+# Captures domain knowledge: calling something a crisis when it isn't is
+# extremely costly; conversely, missing a real crisis is also costly.
+_FALSE_FIRST_STEP_PENALTY: dict[tuple[str, str], float] = {
+    # false crisis alarms — wastes emergency resources
+    (CRISIS_ACTION, "mark_spam"):      -10.0,
+    (CRISIS_ACTION, "ignore"):         -10.0,
+    (CRISIS_ACTION, "reply"):           -8.0,
+    (CRISIS_ACTION, "mark_important"): -5.0,
+    # missing a real crisis
+    ("ignore",        CRISIS_ACTION):  -10.0,
+    ("mark_spam",     CRISIS_ACTION):  -10.0,
+    ("reply",         CRISIS_ACTION):   -8.0,
+    ("mark_important",CRISIS_ACTION):   -5.0,
+    # treating spam as something actionable
+    ("mark_important", "mark_spam"):   -5.0,
+    ("reply",          "mark_spam"):   -5.0,
+}
+
+
 def score_steps(predicted: list[dict], correct: list[dict]) -> float:
     """Score a predicted action sequence against the ground truth.
 
-    Returns a float reward normalised to be meaningful for GRPO:
-      Perfect match (all steps correct, in order) → +10.0
-      Partial credit for correct actions in wrong positions → +2.0 each
-      Wrong actions → -5.0 each
-      Missing required steps → -3.0 each
-    
-    Result is averaged across the number of correct steps so it is
-    comparable across emails with different sequence lengths.
+    Per-step scoring (averaged over len(correct)):
+      Correct action in correct position     → +10
+      Correct action in wrong position       → +2  (partial credit)
+      Wrong action                           → -5
+      Missing expected step                  → -3
+
+    Asymmetric first-step penalty:
+      Predicting crisis when email is not a crisis → extra -10 / -8 / -5
+      Missing a real crisis                        → extra -10 / -8 / -5
     """
     n = max(len(correct), 1)
     total = 0.0
@@ -200,7 +260,7 @@ def score_steps(predicted: list[dict], correct: list[dict]) -> float:
                     exp_val  = (exp.get("value") or "").lower()
                     total += 10.0 if pred_val == exp_val else 2.0
                 else:
-                    total += 10.0          # reply value not checked per spec
+                    total += 10.0
             elif any(p.get("action") == exp_action for p in predicted):
                 total += 2.0               # right action, wrong position
             else:
@@ -212,6 +272,13 @@ def score_steps(predicted: list[dict], correct: list[dict]) -> float:
     extra = len(predicted) - len(correct)
     if extra > 0:
         total -= extra * 2.0
+
+    # Apply asymmetric first-step penalty (on the raw total, not per-step)
+    if predicted and correct:
+        pred0 = predicted[0].get("action", "")
+        exp0  = correct[0].get("action", "")
+        if pred0 != exp0:
+            total += _FALSE_FIRST_STEP_PENALTY.get((pred0, exp0), 0.0)
 
     return total / n
 
@@ -243,12 +310,27 @@ def reward_fn(
 
     `correct_steps_json` is a JSON-encoded string of the ground-truth steps list,
     forwarded from the dataset column of the same name.
+
+    Also applies a diversity penalty when ALL completions in the group predict
+    the same first action — this discourages mode collapse during GRPO training.
     """
     rewards = []
+    predicted_list = []
     for completion, steps_json in zip(completions, correct_steps_json):
         correct = json.loads(steps_json)
         predicted = extract_steps(completion)
+        predicted_list.append(predicted)
         rewards.append(score_steps(predicted, correct))
+
+    # Diversity check: if every completion in the group predicts the same first
+    # action, subtract a collapse penalty from every reward in the group.
+    first_actions = [
+        p[0].get("action", "") if p else "" for p in predicted_list
+    ]
+    if len(set(first_actions)) == 1 and len(first_actions) > 1:
+        collapse_penalty = -3.0
+        rewards = [r + collapse_penalty for r in rewards]
+
     return rewards
 
 
@@ -276,6 +358,25 @@ def train(args: argparse.Namespace) -> None:
         tokenizer.pad_token = tokenizer.eos_token
 
     emails = load_emails(TRAIN_JSONL)
+
+    # --- Balanced sampling: upsample minority first-action classes -------
+    from collections import defaultdict
+    import random as _random
+    _random.seed(42)
+    by_first_action: dict[str, list] = defaultdict(list)
+    for e in emails:
+        key = e["steps"][0]["action"] if e.get("steps") else "ignore"
+        by_first_action[key].append(e)
+    max_count = max(len(v) for v in by_first_action.values())
+    balanced: list = []
+    for action_emails in by_first_action.values():
+        oversampled = (action_emails * ((max_count // len(action_emails)) + 1))[:max_count]
+        balanced.extend(oversampled)
+    _random.shuffle(balanced)
+    emails = balanced
+    print(f"[GRPO] Balanced dataset: {len(emails)} examples "
+          f"({len(by_first_action)} action classes × {max_count} each)")
+    # ---------------------------------------------------------------------
 
     # Encode ground-truth steps as JSON string so GRPOTrainer can pass them to reward_fn
     dataset = Dataset.from_dict(
