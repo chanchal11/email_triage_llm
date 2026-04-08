@@ -1,33 +1,36 @@
 #!/usr/bin/env python3
 """
-Email Triage RL Agent — Q-Learning Demo
-========================================
+Email Triage RL Agent — Q-Learning Demo (multi-step edition)
+=============================================================
 
-This script demonstrates reinforcement learning applied to email triage.
+Trains a Q-learning agent to predict the *ordered sequence of triage actions*
+for each email, supporting the full expanded action set:
 
-The *state* is the LLM-assigned email category (5 possible values).
-The *action space* is {reply, mark_spam, mark_important, ignore} (4 actions).
-A Q-table (5 x 4) maps every (state, action) pair to an expected reward.
+  reply | mark_spam | mark_important | ignore | route_to_department | high-priority "crisis"
 
-Training loop (contextual bandit, no state transitions):
+The *state* is the email category (5 possible values).
+For routing actions the state is enriched with the category, so the Q-table
+learns (category, step_idx) → best_action.
+
+Training loop (multi-step contextual bandit):
   For each episode:
-    1. Sample a random email from the dataset
-    2. Classify it with the LLM (or use ground-truth label for speed)
-    3. Choose an action with epsilon-greedy exploration
-    4. Compute a shaped reward via compute_reward()
-    5. Update the Q-table with a Bellman-style TD update
+    1. Sample a random email from train_data.jsonl
+    2. For each correct step in the ground-truth sequence (up to MAX_STEPS):
+         a. Choose an action with epsilon-greedy exploration
+         b. Compute shaped per-step reward
+         c. Update Q-table with TD(0) update
+    3. Decay epsilon
 
 Usage:
-    python agent.py                          # run with LLM classification (slow)
-    python agent.py --no-llm                 # use ground-truth labels (fast, for demo)
-    python agent.py --episodes 100 --no-llm  # more episodes, no LLM
-    python agent.py --server http://localhost:8000  # run against live server via REST
+    python agent.py --no-llm --episodes 200       # fast demo
+    python agent.py --save models/qtable.json      # train & save
+    python agent.py --test --load models/qtable.json   # evaluate
+    python agent.py --server http://localhost:8000  # vs live server
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import random
@@ -40,20 +43,29 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-ACTIONS = ["reply", "mark_spam", "mark_important", "ignore"]
+CRISIS_ACTION = 'high-priority "crisis"'
+
+ACTIONS = [
+    CRISIS_ACTION,
+    "mark_important",
+    "mark_spam",
+    "ignore",
+    "reply",
+    "route_to_department",
+]
+
+DEPARTMENTS = [
+    "HR", "Management", "Tech Support", "Billing & Finance",
+    "Legal", "Business Team", "Customer Support", "Sales",
+    "Operations", "Security",
+]
+
 CATEGORIES = ["work", "spam", "personal", "promotion", "urgent"]
+MAX_STEPS = 5
 
-# Ground-truth label → category mapping (used when --no-llm is set)
-LABEL_TO_CATEGORY: dict[str, str] = {
-    "reply": "work",
-    "mark_spam": "spam",
-    "mark_important": "urgent",
-    "ignore": "promotion",
-}
-
-CSV_PATH = Path(
-    os.environ.get("EMAIL_TRIAGE_DATA", str(Path(__file__).parent / "docs" / "email_test_data.csv"))
-)
+DOCS = Path(__file__).parent / "docs"
+TRAIN_JSONL = Path(os.environ.get("EMAIL_TRIAGE_TRAIN", str(DOCS / "train_data.jsonl")))
+TEST_JSONL  = Path(os.environ.get("EMAIL_TRIAGE_TEST",  str(DOCS / "test_data.jsonl")))
 
 
 # ---------------------------------------------------------------------------
@@ -61,17 +73,18 @@ CSV_PATH = Path(
 # ---------------------------------------------------------------------------
 class QAgent:
     """
-    Tabular Q-learning agent for the email triage contextual bandit.
+    Tabular Q-learning agent for multi-step email triage.
 
-    Each state is an email category string; the Q-table maps
-    (category, action) -> expected cumulative reward.
+    State key: "<category>:<step_idx>"  (e.g. "urgent:0", "spam:0")
+    Action   : one of ACTIONS (for route_to_department, the value is
+                chosen greedily from a sub-table keyed by category)
     """
 
     def __init__(
         self,
-        alpha: float = 0.3,      # learning rate
-        gamma: float = 0.9,      # discount factor (single-step -> ~irrelevant but kept for generality)
-        epsilon: float = 1.0,    # initial exploration rate
+        alpha: float = 0.3,
+        gamma: float = 0.9,
+        epsilon: float = 1.0,
         epsilon_min: float = 0.05,
         epsilon_decay: float = 0.97,
     ):
@@ -81,64 +94,67 @@ class QAgent:
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
 
-        # Q[state][action] -> float
+        # Q[state_key][action] → expected reward
         self.Q: dict[str, dict[str, float]] = defaultdict(
             lambda: {a: 0.0 for a in ACTIONS}
         )
+        # Sub-table for route_to_department value (department) selection
+        self.Q_dept: dict[str, dict[str, float]] = defaultdict(
+            lambda: {d: 0.0 for d in DEPARTMENTS}
+        )
 
-        # Tracking
         self.episode_rewards: list[float] = []
-        self.episode_actions: list[str] = []
 
-    def choose_action(self, state: str) -> str:
-        """Epsilon-greedy action selection."""
+    def _state_key(self, category: str, step_idx: int) -> str:
+        return f"{category}:{step_idx}"
+
+    def choose_action(self, category: str, step_idx: int) -> tuple[str, Optional[str]]:
+        """Epsilon-greedy: returns (action, value_or_None)."""
+        key = self._state_key(category, step_idx)
         if random.random() < self.epsilon:
-            return random.choice(ACTIONS)          # explore
-        return max(self.Q[state], key=self.Q[state].get)  # exploit
-
-    def update(self, state: str, action: str, reward: float, next_state: Optional[str] = None):
-        """
-        TD(0) Q-table update.
-
-        For a single-step bandit next_state is None and the update simplifies to:
-            Q(s,a) <- Q(s,a) + alpha * (reward - Q(s,a))
-        """
-        if next_state is not None:
-            best_next = max(self.Q[next_state].values())
+            action = random.choice(ACTIONS)
         else:
-            best_next = 0.0
+            action = max(self.Q[key], key=self.Q[key].get)
 
-        old = self.Q[state][action]
-        td_target = reward + self.gamma * best_next
-        self.Q[state][action] = old + self.alpha * (td_target - old)
+        value: Optional[str] = None
+        if action == "route_to_department":
+            if random.random() < self.epsilon:
+                value = random.choice(DEPARTMENTS)
+            else:
+                value = max(self.Q_dept[category], key=self.Q_dept[category].get)
+        elif action == "reply":
+            value = "Thank you for your email. I will get back to you shortly."
+
+        return action, value
+
+    def update(
+        self,
+        category: str,
+        step_idx: int,
+        action: str,
+        reward: float,
+        dept_value: Optional[str] = None,
+    ):
+        key = self._state_key(category, step_idx)
+        old = self.Q[key][action]
+        self.Q[key][action] = old + self.alpha * (reward - old)
+
+        if action == "route_to_department" and dept_value is not None:
+            old_d = self.Q_dept[category][dept_value]
+            self.Q_dept[category][dept_value] = old_d + self.alpha * (reward - old_d)
 
     def decay_epsilon(self):
-        """Decay exploration rate after each episode."""
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    def best_policy(self) -> dict[str, str]:
-        """Return the greedy policy derived from the current Q-table."""
-        return {
-            state: max(actions, key=actions.get)
-            for state, actions in self.Q.items()
-        }
-
     def save(self, path: str | Path) -> None:
-        """
-        Persist the Q-table and hyperparameters to a JSON file.
-
-        Args:
-            path: File path (e.g. "models/qtable.json").
-        """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "q_table": {state: dict(actions) for state, actions in self.Q.items()},
+            "q_table":     {k: dict(v) for k, v in self.Q.items()},
+            "q_dept":      {k: dict(v) for k, v in self.Q_dept.items()},
             "hyperparameters": {
-                "alpha": self.alpha,
-                "gamma": self.gamma,
-                "epsilon": self.epsilon,
-                "epsilon_min": self.epsilon_min,
+                "alpha": self.alpha, "gamma": self.gamma,
+                "epsilon": self.epsilon, "epsilon_min": self.epsilon_min,
                 "epsilon_decay": self.epsilon_decay,
             },
             "training_stats": {
@@ -155,31 +171,23 @@ class QAgent:
 
     @classmethod
     def load(cls, path: str | Path) -> "QAgent":
-        """
-        Restore a Q-table from a JSON file saved by save().
-
-        Args:
-            path: File path to load from.
-
-        Returns:
-            QAgent instance with the restored Q-table.
-        """
         path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Model file not found: {path}")
         with open(path, encoding="utf-8") as fh:
             payload = json.load(fh)
-
         hp = payload.get("hyperparameters", {})
         agent = cls(
             alpha=hp.get("alpha", 0.3),
             gamma=hp.get("gamma", 0.9),
-            epsilon=hp.get("epsilon", 0.05),    # start greedy after load
+            epsilon=hp.get("epsilon", 0.05),
             epsilon_min=hp.get("epsilon_min", 0.05),
             epsilon_decay=hp.get("epsilon_decay", 0.97),
         )
-        for state, actions in payload.get("q_table", {}).items():
-            agent.Q[state] = {a: actions.get(a, 0.0) for a in ACTIONS}
+        for k, v in payload.get("q_table", {}).items():
+            agent.Q[k] = {a: v.get(a, 0.0) for a in ACTIONS}
+        for k, v in payload.get("q_dept", {}).items():
+            agent.Q_dept[k] = {d: v.get(d, 0.0) for d in DEPARTMENTS}
         print(f"[LOAD] Q-table loaded ← {path}")
         return agent
 
@@ -187,65 +195,56 @@ class QAgent:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def load_emails() -> list[dict]:
-    """Load emails from the CSV dataset (path set by EMAIL_TRIAGE_DATA or default)."""
-    if not CSV_PATH.exists():
+
+def load_emails(jsonl_path: Path) -> list[dict]:
+    if not jsonl_path.exists():
         raise FileNotFoundError(
-            f"Dataset not found: {CSV_PATH}\n"
-            "Set EMAIL_TRIAGE_DATA=/path/to/emails.csv or place "
-            "docs/email_test_data.csv in the repo root."
+            f"Dataset not found: {jsonl_path}\n"
+            "Run: python scripts/generate_data.py"
         )
-    with open(CSV_PATH, newline="", encoding="utf-8") as fh:
-        rows = list(csv.DictReader(fh))
-    print(f"[DATA] Loaded {len(rows)} emails from {CSV_PATH}")
-    return rows
+    records = []
+    with open(jsonl_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    print(f"[DATA] Loaded {len(records)} emails from {jsonl_path}")
+    return records
 
 
-def compute_reward_local(action: str, correct_action: str) -> float:
-    """Reward function (mirrors llm.py so this script is importable standalone)."""
-    _REWARD_TABLE = {
-        ("mark_spam", "mark_important"): -10.0,
-        ("ignore", "mark_important"): -8.0,
-        ("reply", "mark_important"): -2.0,
-        ("mark_important", "mark_spam"): -7.0,
-        ("reply", "mark_spam"): -7.0,
-    }
-    if action == correct_action:
-        return 10.0
-    return _REWARD_TABLE.get((action, correct_action), -5.0)
+def step_reward(
+    action: str,
+    value: Optional[str],
+    correct_steps: list[dict],
+    step_idx: int,
+) -> float:
+    """Compute reward for one submitted step vs ground-truth sequence."""
+    if step_idx >= len(correct_steps):
+        return -3.0   # extra step beyond expected sequence
 
+    exp = correct_steps[step_idx]
+    exp_action = exp.get("action", "")
+    exp_value  = exp.get("value")
 
-def get_category_from_label(true_label: str) -> str:
-    """Map a true_label string to its canonical category (fast path, no LLM)."""
-    return LABEL_TO_CATEGORY.get(true_label, "personal")
+    if action == exp_action:
+        if action == "route_to_department":
+            if value and exp_value and value.lower() == exp_value.lower():
+                return 10.0
+            return 2.0    # right action, wrong department
+        return 10.0       # correct (reply value not checked per spec)
 
+    # Partial credit if this action appears later in the sequence
+    if any(s.get("action") == action for s in correct_steps[step_idx + 1:]):
+        return 2.0
 
-def get_category_from_llm(email_text: str) -> str:
-    """Classify via facebook/bart-large-mnli (slow, requires transformers)."""
-    try:
-        from email_triage_env.llm import classify_email  # type: ignore
-    except ImportError:
-        # Fallback when running outside the package
-        _root = Path(__file__).parent / "email_triage_env"
-        sys.path.insert(0, str(_root))
-        from llm import classify_email  # type: ignore
-    return classify_email(email_text)
-
-
-def running_average(values: list[float], window: int = 10) -> list[float]:
-    """Compute a simple moving average."""
-    avgs = []
-    for i in range(len(values)):
-        start = max(0, i - window + 1)
-        avgs.append(sum(values[start : i + 1]) / (i - start + 1))
-    return avgs
+    return -5.0
 
 
 # ---------------------------------------------------------------------------
-# Server-backed mode: use the /auto endpoint instead of local env
+# Server-backed mode
 # ---------------------------------------------------------------------------
+
 def run_server_episodes(server_url: str, episodes: int):
-    """Run episodes against a live FastAPI server using the /auto endpoint."""
     try:
         import requests
     except ImportError:
@@ -268,12 +267,9 @@ def run_server_episodes(server_url: str, episodes: int):
 
         reward = data.get("reward", 0)
         rewards.append(reward)
-        correct = data.get("reward", 0) > 0
         print(
             f"[{ep:03d}] email={data.get('email','')[:40]!r:<42} "
-            f"category={data.get('category',''):12s} "
-            f"action={data.get('action',''):15s} "
-            f"reward={reward:+5.1f}  {'✓' if correct else '✗'}"
+            f"reward={reward:+5.1f}"
         )
 
     avg = sum(rewards) / len(rewards) if rewards else 0
@@ -281,186 +277,151 @@ def run_server_episodes(server_url: str, episodes: int):
 
 
 # ---------------------------------------------------------------------------
-# Local Q-learning training loop
+# Local multi-step Q-learning training loop
 # ---------------------------------------------------------------------------
-def run_local_training(episodes: int, use_llm: bool, seed: int, preload_path: Optional[str] = None):
-    """Train a Q-learning agent directly against the local environment."""
-    random.seed(seed)
-    emails = load_emails()
 
-    if preload_path:
-        agent = QAgent.load(preload_path)
-    else:
-        agent = QAgent()
+def run_local_training(
+    episodes: int,
+    seed: int,
+    preload_path: Optional[str] = None,
+):
+    random.seed(seed)
+    emails = load_emails(TRAIN_JSONL)
+
+    agent = QAgent.load(preload_path) if preload_path else QAgent()
 
     print(f"\n{'='*60}")
-    print(f"Q-Learning Email Triage Agent")
-    print(f"Episodes: {episodes}  |  LLM: {use_llm}  |  Seed: {seed}")
+    print(f"Multi-step Q-Learning Email Triage Agent")
+    print(f"Episodes: {episodes}  |  Seed: {seed}")
     print(f"{'='*60}\n")
 
     for ep in range(1, episodes + 1):
         email = random.choice(emails)
-        email_text = email["email_text"]
-        true_label = email["true_label"]
+        category = email.get("category", "work")
+        correct_steps = email.get("steps", [])
 
-        # Determine state (category)
-        if use_llm:
-            state = get_category_from_llm(email_text)
-        else:
-            state = get_category_from_label(true_label)
+        ep_reward = 0.0
+        all_correct = True
 
-        # Agent picks action
-        action = agent.choose_action(state)
+        for step_idx in range(min(len(correct_steps), MAX_STEPS)):
+            action, value = agent.choose_action(category, step_idx)
+            reward = step_reward(action, value, correct_steps, step_idx)
+            agent.update(category, step_idx, action, reward, value if action == "route_to_department" else None)
+            ep_reward += reward
+            if reward < 5.0:
+                all_correct = False
 
-        # Environment returns reward
-        reward = compute_reward_local(action, true_label)
-
-        # Q-table update (single-step bandit: no next_state)
-        agent.update(state, action, reward)
         agent.decay_epsilon()
+        agent.episode_rewards.append(ep_reward)
 
-        agent.episode_rewards.append(reward)
-        agent.episode_actions.append(action)
-
-        # Progress logging
-        correct_mark = "✓" if reward > 0 else "✗"
-        if ep <= 20 or ep % (episodes // 10 + 1) == 0 or ep == episodes:
+        if ep <= 20 or ep % max(1, episodes // 10) == 0 or ep == episodes:
+            mark = "✓" if all_correct else "✗"
+            first_correct = correct_steps[0] if correct_steps else {}
             print(
-                f"[{ep:04d}] {correct_mark} "
-                f"category={state:12s} "
-                f"action={action:15s} "
-                f"true={true_label:15s} "
-                f"reward={reward:+5.1f}  "
-                f"ε={agent.epsilon:.3f}"
+                f"[{ep:04d}] {mark} "
+                f"cat={category:12s} "
+                f"first_expected={first_correct.get('action','?'):28s} "
+                f"ep_reward={ep_reward:+6.1f}  ε={agent.epsilon:.3f}"
             )
 
-    # ---------------------------------------------------------------------------
-    # Results summary
-    # ---------------------------------------------------------------------------
-    print(f"\n{'='*60}")
-    print("Training Complete — Results")
-    print(f"{'='*60}")
-
+    # Summary
     total = len(agent.episode_rewards)
-    wins = sum(1 for r in agent.episode_rewards if r > 0)
-    avg_reward = sum(agent.episode_rewards) / total
-
-    print(f"  Episodes       : {total}")
-    print(f"  Correct actions: {wins}/{total} ({100*wins/total:.1f}%)")
-    print(f"  Average reward : {avg_reward:+.2f}")
-    print(f"  Final epsilon  : {agent.epsilon:.4f}")
-
-    print("\nLearned Q-Policy (greedy):")
-    for state, best_action in sorted(agent.best_policy().items()):
-        q_vals = "  ".join(f"{a}={agent.Q[state][a]:+.1f}" for a in ACTIONS)
-        print(f"  {state:12s} → {best_action:15s}  [{q_vals}]")
-
-    print("\nFirst-10-episode vs Last-10-episode average reward:")
-    first_10 = sum(agent.episode_rewards[:10]) / 10
-    last_10 = sum(agent.episode_rewards[-10:]) / 10
-    improvement = last_10 - first_10
-    print(f"  First 10: {first_10:+.2f}")
-    print(f"  Last 10 : {last_10:+.2f}")
-    print(f"  Change  : {improvement:+.2f}  ({'improved' if improvement > 0 else 'no improvement'})")
-
+    avg   = sum(agent.episode_rewards) / total
+    print(f"\n{'='*60}")
+    print(f"Training Complete — {total} episodes, avg reward/episode: {avg:+.2f}")
+    print(f"Final epsilon: {agent.epsilon:.4f}")
     return agent
 
 
 # ---------------------------------------------------------------------------
-# Test / evaluation loop (uses saved weights, epsilon=0 → fully greedy)
+# Evaluation on test set
 # ---------------------------------------------------------------------------
-def run_test(model_path: str, use_llm: bool, seed: int):
-    """Load a saved Q-table and evaluate it on the full dataset."""
+
+def run_test(model_path: str, seed: int):
     agent = QAgent.load(model_path)
-    agent.epsilon = 0.0          # pure exploitation — no random actions
+    agent.epsilon = 0.0  # greedy
 
     random.seed(seed)
-    emails = load_emails()
+    emails = load_emails(TEST_JSONL)
 
     print(f"\n{'='*60}")
-    print(f"Evaluation (greedy policy loaded from {model_path})")
-    print(f"LLM: {use_llm}  |  Dataset: {len(emails)} emails")
+    print(f"Evaluation (greedy policy)  | {len(emails)} test emails")
     print(f"{'='*60}\n")
 
     total_reward = 0.0
-    correct = 0
-    rows = []
+    perfect_episodes = 0
 
     for email in emails:
+        category = email.get("category", "work")
         email_text = email["email_text"]
-        true_label = email["true_label"]
+        correct_steps = email.get("steps", [])
 
-        if use_llm:
-            state = get_category_from_llm(email_text)
-        else:
-            state = get_category_from_label(true_label)
+        ep_reward = 0.0
+        all_ok = True
+        pred_summary = []
 
-        # Greedy action
-        if state in agent.Q:
-            action = max(agent.Q[state], key=agent.Q[state].get)
-        else:
-            action = "ignore"    # unknown state fallback
+        for step_idx in range(min(len(correct_steps), MAX_STEPS)):
+            key = f"{category}:{step_idx}"
+            if key in agent.Q:
+                action = max(agent.Q[key], key=agent.Q[key].get)
+            else:
+                action = "ignore"  # unseen state fallback
 
-        reward = compute_reward_local(action, true_label)
-        total_reward += reward
-        if reward > 0:
-            correct += 1
+            value: Optional[str] = None
+            if action == "route_to_department":
+                if category in agent.Q_dept:
+                    value = max(agent.Q_dept[category], key=agent.Q_dept[category].get)
+                else:
+                    value = DEPARTMENTS[0]
 
-        mark = "✓" if reward > 0 else "✗"
+            reward = step_reward(action, value, correct_steps, step_idx)
+            ep_reward += reward
+            if reward < 5.0:
+                all_ok = False
+            step_dict = {"action": action}
+            if value:
+                step_dict["value"] = value
+            pred_summary.append(step_dict)
+
+        total_reward += ep_reward
+        if all_ok:
+            perfect_episodes += 1
+
+        mark = "✓" if all_ok else "✗"
         print(
-            f"{mark} category={state:12s}  action={action:15s}  "
-            f"true={true_label:15s}  reward={reward:+5.1f}  "
-            f"email={email_text[:40]!r}"
+            f"{mark} ep_reward={ep_reward:+5.1f}  "
+            f"cat={category:12s}  "
+            f"email={email_text[:42]!r}"
         )
-        rows.append({"email": email_text, "category": state, "action": action,
-                     "correct_action": true_label, "reward": reward})
+        print(f"    expected : {json.dumps(correct_steps, ensure_ascii=False)[:80]}")
+        print(f"    got      : {json.dumps(pred_summary,  ensure_ascii=False)[:80]}")
 
     n = len(emails)
     print(f"\n{'='*60}")
-    print(f"  Emails tested  : {n}")
-    print(f"  Correct actions: {correct}/{n} ({100*correct/n:.1f}%)")
-    print(f"  Total reward   : {total_reward:+.1f}")
-    print(f"  Avg reward     : {total_reward/n:+.2f}")
+    print(f"  Emails tested         : {n}")
+    print(f"  Perfect sequences     : {perfect_episodes}/{n} ({100*perfect_episodes/n:.1f}%)")
+    print(f"  Avg reward / episode  : {total_reward/n:+.2f}")
     print(f"{'='*60}")
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI
 # ---------------------------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Email Triage RL Agent (Q-Learning)",
+        description="Email Triage Multi-step Q-Learning Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument(
-        "--episodes", type=int, default=50,
-        help="Number of training episodes (default: 50)",
-    )
-    parser.add_argument(
-        "--no-llm", action="store_true",
-        help="Skip LLM classification; use ground-truth labels as state (much faster)",
-    )
-    parser.add_argument(
-        "--server", type=str, default="",
-        help="If set, run against this server URL (e.g. http://localhost:8000) via /auto endpoint",
-    )
-    parser.add_argument(
-        "--seed", type=int, default=42,
-        help="Random seed for reproducibility",
-    )
-    parser.add_argument(
-        "--save", type=str, default="models/qtable.json",
-        help="Path to save Q-table weights after training (default: models/qtable.json)",
-    )
-    parser.add_argument(
-        "--load", type=str, default="",
-        help="Path to load Q-table weights from before training (resume training)",
-    )
-    parser.add_argument(
-        "--test", action="store_true",
-        help="Evaluate a saved model (use with --load); no training is done",
-    )
+    parser.add_argument("--episodes", type=int, default=50)
+    parser.add_argument("--server", type=str, default="",
+                        help="Run against live server URL (e.g. http://localhost:8000)")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--save", type=str, default="models/qtable.json")
+    parser.add_argument("--load", type=str, default="")
+    parser.add_argument("--test", action="store_true",
+                        help="Evaluate saved model on test set (requires --load)")
     args = parser.parse_args()
 
     if args.server:
@@ -469,11 +430,10 @@ def main():
         if not args.load:
             print("ERROR: --test requires --load <path>")
             sys.exit(1)
-        run_test(args.load, use_llm=not args.no_llm, seed=args.seed)
+        run_test(args.load, seed=args.seed)
     else:
         agent = run_local_training(
             episodes=args.episodes,
-            use_llm=not args.no_llm,
             seed=args.seed,
             preload_path=args.load or None,
         )
@@ -483,3 +443,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

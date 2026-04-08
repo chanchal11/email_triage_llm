@@ -1,16 +1,18 @@
 # Virtual Environment
-email_triage_env/
+et_env/
 venv/
 env/
 ENV/
 .venv
 
 # Python
+
 __pycache__/
 __pycache__/**
 *.py[cod]
 *$py.class
 *.so
+*.pyc
 .Python
 build/
 develop-eggs/

@@ -7,12 +7,23 @@
 """Email Triage RL Environment — LLM + RL + OpenEnv."""
 
 from .client import EmailTriageEnv
-from .models import ACTION_SPACE, CATEGORY_SPACE, EmailTriageAction, EmailTriageObservation
+from .models import (
+    ACTION_SPACE,
+    CATEGORY_SPACE,
+    DEPARTMENT_SPACE,
+    MAX_STEPS,
+    ActionStep,
+    EmailTriageAction,
+    EmailTriageObservation,
+)
 
 __all__ = [
+    "ActionStep",
     "EmailTriageAction",
     "EmailTriageObservation",
     "EmailTriageEnv",
     "ACTION_SPACE",
     "CATEGORY_SPACE",
+    "DEPARTMENT_SPACE",
+    "MAX_STEPS",
 ]
