@@ -410,10 +410,13 @@ def train(args: argparse.Namespace) -> None:
         gradient_accumulation_steps=args.grad_accum,
         learning_rate=args.lr,
         num_generations=args.num_generations,
-        max_completion_length=128,  # JSON arrays of steps need more tokens than single words
+        max_completion_length=256,  # enough for crisis 3-step JSON arrays
         temperature=args.temperature,
         logging_steps=5,
         save_steps=50,
+        warmup_ratio=0.1,           # stabilise early policy updates
+        weight_decay=0.01,          # regularise against over-fitting small dataset
+        max_grad_norm=0.5,          # clip runaway gradients
         bf16=use_bf16,
         fp16=use_fp16,
         report_to="none",
