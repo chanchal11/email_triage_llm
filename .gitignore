@@ -55,4 +55,4 @@ logs/
 .DS_Store
 Thumbs.db
 
-models/**
+models/grpo_email_triage_old

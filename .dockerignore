@@ -1,0 +1,19 @@
+# Exclude virtualenvs
+et_env/
+email_triage_env/.venv/
+email_triage_env/__pycache__/
+
+# Exclude large model files
+models/
+
+# Exclude training/script artifacts
+scripts/
+grpo_train.py
+inference.py
+agent.py
+
+# Exclude git and editor files
+.git/
+.gitignore
+*.pyc
+__pycache__/

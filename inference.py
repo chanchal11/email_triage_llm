@@ -68,7 +68,7 @@ os.environ.setdefault("USE_JAX", "0")
 API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY", "")
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-0.5B-Instruct")
-GRPO_MODEL_PATH = os.getenv("GRPO_MODEL_PATH", "")   # local fine-tuned model
+GRPO_MODEL_PATH = os.getenv("GRPO_MODEL_PATH", "models/grpo_email_triage")   # local fine-tuned model
 
 # OpenEnv environment server (HF Space or local Docker)
 # When set, emails are fetched live via GET /reset instead of the local JSONL.

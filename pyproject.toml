@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "email-triage-submission"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "openenv-core[core]>=0.2.0",
+]
+
+[project.scripts]
+server = "email_triage_env.server.app:main"
