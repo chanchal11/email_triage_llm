@@ -505,10 +505,15 @@ def run_episode(
             break
 
     episode_reward = sum(rewards)
-    score_fraction = max(0.0, episode_reward) / MAX_EPISODE_REWARD
+    # Use the actual number of expected steps for this email, not the global MAX_STEPS.
+    # Most emails have 1-2 steps; dividing by MAX_STEPS (5) would make success
+    # impossible for them (max score 20/50 = 0.40 < SUCCESS_THRESHOLD of 0.5).
+    n_correct = max(len(correct_steps), 1)
+    episode_max = n_correct * MAX_REWARD_PER_STEP
+    score_fraction = max(0.0, episode_reward) / episode_max
     success = score_fraction >= SUCCESS_THRESHOLD
 
-    return rewards, steps_taken, success
+    return rewards, steps_taken, success, episode_max
 
 
 # ─────────────────────────── Main ────────────────────────────────────────────
@@ -548,19 +553,20 @@ def main() -> None:
     all_rewards: list[float] = []
     total_steps  = 0
     total_success = 0
+    total_max = 0.0
 
     for ep_idx, email_record in enumerate(emails):
-        rewards, steps, success = run_episode(
+        rewards, steps, success, episode_max = run_episode(
             ep_idx, email_record, api_client, local_model_pair
         )
         all_rewards.extend(rewards)
-        total_steps  += steps
+        total_steps   += steps
         total_success += int(success)
+        total_max     += episode_max
 
     # ── Compute overall episode-level score ──
-    # score = average fraction of max reward achieved per episode
-    total_max    = len(emails) * MAX_EPISODE_REWARD
-    total_earned = sum(r for r in all_rewards if r > 0)  # positive rewards only
+    # score = fraction of total possible reward earned (positive rewards only)
+    total_earned = sum(r for r in all_rewards if r > 0)
     overall_score = min(max(total_earned / total_max, 0.0), 1.0)
 
     overall_success = (total_success / len(emails)) >= SUCCESS_THRESHOLD
