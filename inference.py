@@ -536,9 +536,16 @@ def main() -> None:
     local_model_pair = None
 
     if GRPO_MODEL_PATH and Path(GRPO_MODEL_PATH).exists():
-        local_model_pair = _build_local_model()
-        active_model = f"local:{GRPO_MODEL_PATH}"
-    else:
+        try:
+            local_model_pair = _build_local_model()
+            active_model = f"local:{GRPO_MODEL_PATH}"
+        except Exception as exc:
+            print(
+                f"[WARN] Local model load failed ({exc}); falling back to API.",
+                file=sys.stderr,
+            )
+
+    if local_model_pair is None:
         if not API_KEY:
             print(
                 "[WARN] HF_TOKEN / API_KEY not set. Requests may fail for gated models.",
