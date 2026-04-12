@@ -1,0 +1,129 @@
+{
+  "q_table": {
+    "work:0": {
+      "high-priority \"crisis\"": -3.7994999999999997,
+      "mark_important": -3.2849999999999997,
+      "mark_spam": -3.2849999999999997,
+      "ignore": -3.2849999999999997,
+      "reply": -3.38424705,
+      "route_to_department": 1.477927268295
+    },
+    "work:1": {
+      "high-priority \"crisis\"": -1.5,
+      "mark_important": -2.55,
+      "mark_spam": -2.55,
+      "ignore": -3.2849999999999997,
+      "reply": -1.5,
+      "route_to_department": 2.32935895788608
+    },
+    "spam:0": {
+      "high-priority \"crisis\"": -1.5,
+      "mark_important": -2.55,
+      "mark_spam": 9.997263125265992,
+      "ignore": -1.5,
+      "reply": -2.55,
+      "route_to_department": -2.55
+    },
+    "promotion:0": {
+      "high-priority \"crisis\"": -3.2849999999999997,
+      "mark_important": -1.5,
+      "mark_spam": -1.5,
+      "ignore": 9.176457000000001,
+      "reply": 0.0,
+      "route_to_department": -3.2849999999999997
+    },
+    "urgent:0": {
+      "high-priority \"crisis\"": 9.9667670694304,
+      "mark_important": 0.6,
+      "mark_spam": 0.0,
+      "ignore": -1.5,
+      "reply": -1.5,
+      "route_to_department": 0.6
+    },
+    "urgent:1": {
+      "high-priority \"crisis\"": -1.5,
+      "mark_important": 9.983715864020896,
+      "mark_spam": 0.0,
+      "ignore": 0.0,
+      "reply": 0.0,
+      "route_to_department": 0.6
+    },
+    "urgent:2": {
+      "high-priority \"crisis\"": -2.55,
+      "mark_important": -1.5,
+      "mark_spam": 0.0,
+      "ignore": 0.0,
+      "reply": 0.0,
+      "route_to_department": 2.3012405141441192
+    },
+    "personal:0": {
+      "high-priority \"crisis\"": 0.0,
+      "mark_important": 0.0,
+      "mark_spam": 0.0,
+      "ignore": 0.0,
+      "reply": 3.0,
+      "route_to_department": 0.0
+    }
+  },
+  "q_dept": {
+    "work": {
+      "HR": 1.994750027447235,
+      "Management": 0.0,
+      "Tech Support": 0.6,
+      "Billing & Finance": -1.5,
+      "Legal": 0.0,
+      "Business Team": -0.43613999999999997,
+      "Customer Support": 0.0,
+      "Sales": 0.6,
+      "Operations": -0.44999999999999996,
+      "Security": 0.0
+    },
+    "urgent": {
+      "HR": 0.0,
+      "Management": 0.0,
+      "Tech Support": 0.6,
+      "Billing & Finance": 0.0,
+      "Legal": 0.0,
+      "Business Team": 0.0,
+      "Customer Support": 0.0,
+      "Sales": 1.02,
+      "Operations": 2.275075147394456,
+      "Security": 0.0
+    },
+    "spam": {
+      "HR": -1.5,
+      "Management": 0.0,
+      "Tech Support": 0.0,
+      "Billing & Finance": 0.0,
+      "Legal": 0.0,
+      "Business Team": -1.5,
+      "Customer Support": 0.0,
+      "Sales": 0.0,
+      "Operations": 0.0,
+      "Security": 0.0
+    },
+    "promotion": {
+      "HR": -1.5,
+      "Management": -2.55,
+      "Tech Support": 0.0,
+      "Billing & Finance": 0.0,
+      "Legal": 0.0,
+      "Business Team": 0.0,
+      "Customer Support": 0.0,
+      "Sales": 0.0,
+      "Operations": 0.0,
+      "Security": 0.0
+    }
+  },
+  "hyperparameters": {
+    "alpha": 0.3,
+    "gamma": 0.9,
+    "epsilon": 0.05,
+    "epsilon_min": 0.05,
+    "epsilon_decay": 0.97
+  },
+  "training_stats": {
+    "episodes": 100,
+    "avg_reward": 5.2
+  }
+}

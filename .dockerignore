@@ -1,7 +1,7 @@
 # Exclude virtualenvs
 et_env/
-email_triage_env/.venv/
-email_triage_env/__pycache__/
+.venv/
+__pycache__/
 
 # Exclude large model files
 models/
@@ -16,4 +16,3 @@ agent.py
 .git/
 .gitignore
 *.pyc
-__pycache__/
